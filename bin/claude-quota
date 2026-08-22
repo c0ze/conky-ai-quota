@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+# Claude weekly quota for Conky. Usage: claude-quota percent|remaining|days
+# Fetches https://api.anthropic.com/api/oauth/usage (the endpoint Claude
+# Code's /usage shows) at most once per TTL seconds; on failure serves the
+# last good cache from ~/.cache/claude-quota.json.
+# OAuth: ~/.claude/.credentials.json (claudeAiOauth). The access token is
+# short-lived, so this script refreshes it itself via the standard Claude
+# Code token endpoint and writes the new tokens back. If refresh is
+# rejected, run `claude` once and re-login.
+
+import json
+import sys
+import time
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+TTL = 240  # seconds between network fetches
+CACHE = Path.home() / ".cache" / "claude-quota.json"
+CREDS = Path.home() / ".claude" / ".credentials.json"
+TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+
+
+def fresh_token() -> str:
+    creds = json.loads(CREDS.read_text())
+    oauth = creds["claudeAiOauth"]
+    now_ms = time.time() * 1000
+    if oauth.get("expiresAt", 0) - now_ms > 60_000:
+        return oauth["accessToken"]
+
+    body = json.dumps({
+        "client_id": CLIENT_ID,
+        "grant_type": "refresh_token",
+        "refresh_token": oauth["refreshToken"],
+    }).encode()
+    req = urllib.request.Request(
+        TOKEN_URL,
+        data=body,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        data = json.loads(resp.read())
+
+    oauth["accessToken"] = data["access_token"]
+    if data.get("refresh_token"):
+        oauth["refreshToken"] = data["refresh_token"]
+    oauth["expiresAt"] = int(now_ms + data.get("expires_in", 3600) * 1000)
+    CREDS.write_text(json.dumps(creds, indent=2))
+    CREDS.chmod(0o600)
+    return oauth["accessToken"]
+
+
+def fetch() -> dict:
+    req = urllib.request.Request(
+        USAGE_URL,
+        headers={
+            "Authorization": f"Bearer {fresh_token()}",
+            "Accept": "application/json",
+            "anthropic-beta": "oauth-2025-04-20",
+            "User-Agent": "claude-code/2.0",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        payload = json.loads(resp.read())
+
+    weekly = payload.get("seven_day") or payload.get("five_hour")
+    if not weekly:
+        raise ValueError("no usage window in response")
+
+    secs = 0.0
+    if weekly.get("resets_at"):
+        dt = datetime.fromisoformat(weekly["resets_at"].replace("Z", "+00:00"))
+        secs = max(0.0, (dt - datetime.now(timezone.utc)).total_seconds())
+
+    return {
+        "percent": weekly.get("utilization") or 0,
+        "reset_secs": secs,
+        "fetched_at": time.time(),
+    }
+
+
+def load() -> dict | None:
+    try:
+        cached = json.loads(CACHE.read_text())
+    except (OSError, ValueError):
+        cached = None
+
+    if cached and time.time() - cached.get("fetched_at", 0) < TTL:
+        return cached
+
+    try:
+        data = fetch()
+    except Exception:
+        return cached  # stale beats nothing
+
+    CACHE.parent.mkdir(parents=True, exist_ok=True)
+    CACHE.write_text(json.dumps(data))
+    CACHE.chmod(0o600)
+    return data
+
+
+def fmt_remaining(secs: float) -> str:
+    days, rem = divmod(int(secs), 86400)
+    hours = rem // 3600
+    if days >= 2:
+        return f"{days} days to reset"
+    if days == 1:
+        return f"1 day {hours}h to reset"
+    return f"{hours}h to reset"
+
+
+def main() -> None:
+    mode = sys.argv[1] if len(sys.argv) > 1 else "percent"
+    data = load()
+
+    if data is None:
+        print(0 if mode == "percent" else "?")
+        return
+
+    if mode == "percent":
+        print(f"{data['percent']:.0f}")
+    elif mode == "remaining":
+        print(fmt_remaining(data["reset_secs"]))
+    elif mode == "days":
+        secs = data["reset_secs"]
+        days = int(secs // 86400)
+        print(f"{days:02d}d" if days > 0 else f"{int(secs // 3600):02d}h")
+    else:
+        sys.exit(f"unknown mode: {mode}")
+
+
+if __name__ == "__main__":
+    main()

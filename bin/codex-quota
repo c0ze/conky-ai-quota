@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+# Codex weekly quota for Conky. Usage: codex-quota percent|remaining|days
+# Fetches https://chatgpt.com/backend-api/wham/usage at most once per TTL
+# seconds (cache in ~/.cache/codex-quota.json); on fetch failure serves the
+# last good cache.
+# NOTE: the access token expires and only the `codex` CLI refreshes it. If
+# this starts showing stale data, run `codex` once.
+# Shows the weekly window (limit_window_seconds ~= 604800); falls back to
+# primary_window when no weekly lane is present.
+
+import json
+import os
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+TTL = 240  # seconds between network fetches
+CACHE = Path.home() / ".cache" / "codex-quota.json"
+
+
+def fetch() -> dict:
+    codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    tokens = json.loads((codex_home / "auth.json").read_text())["tokens"]
+    headers = {
+        "Authorization": f"Bearer {tokens['access_token']}",
+        "Accept": "application/json",
+        "User-Agent": "codex-cli",
+    }
+    if tokens.get("account_id"):
+        headers["ChatGPT-Account-Id"] = tokens["account_id"]
+    req = urllib.request.Request(
+        "https://chatgpt.com/backend-api/wham/usage", headers=headers
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        rl = json.loads(resp.read()).get("rate_limit") or {}
+
+    primary = rl.get("primary_window")
+    secondary = rl.get("secondary_window")
+    window = next(
+        (w for w in (primary, secondary) if w and abs(w.get("limit_window_seconds", 0) - 604800) < 10800),
+        primary,
+    )
+    if not window:
+        raise ValueError("no rate limit window in response")
+
+    return {
+        "percent": window.get("used_percent") or 0,
+        "reset_secs": max(0, window.get("reset_after_seconds") or 0),
+        "fetched_at": time.time(),
+    }
+
+
+def load() -> dict | None:
+    try:
+        cached = json.loads(CACHE.read_text())
+    except (OSError, ValueError):
+        cached = None
+
+    if cached and time.time() - cached.get("fetched_at", 0) < TTL:
+        return cached
+
+    try:
+        data = fetch()
+    except Exception:
+        return cached  # stale beats nothing
+
+    CACHE.parent.mkdir(parents=True, exist_ok=True)
+    CACHE.write_text(json.dumps(data))
+    CACHE.chmod(0o600)
+    return data
+
+
+def fmt_remaining(secs: float) -> str:
+    days, rem = divmod(int(secs), 86400)
+    hours = rem // 3600
+    if days >= 2:
+        return f"{days} days to reset"
+    if days == 1:
+        return f"1 day {hours}h to reset"
+    return f"{hours}h to reset"
+
+
+def main() -> None:
+    mode = sys.argv[1] if len(sys.argv) > 1 else "percent"
+    data = load()
+
+    if data is None:
+        print(0 if mode == "percent" else "?")
+        return
+
+    if mode == "percent":
+        print(f"{data['percent']:.0f}")
+    elif mode == "remaining":
+        print(fmt_remaining(data["reset_secs"]))
+    elif mode == "days":
+        secs = data["reset_secs"]
+        days = int(secs // 86400)
+        print(f"{days:02d}d" if days > 0 else f"{int(secs // 3600):02d}h")
+    else:
+        sys.exit(f"unknown mode: {mode}")
+
+
+if __name__ == "__main__":
+    main()

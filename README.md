@@ -10,6 +10,8 @@ Two config variants are included:
 - `conky/conky.conf` — classic X11 window (works on KDE Plasma and other X11/XWayland desktops)
 - `conky/conky-hyprland.conf` — native **Wayland layer-shell background widget** for Hyprland (no window, sits behind your apps like a proper desktop widget), driven by `conky/start-conky.sh` which picks the right config based on `XDG_CURRENT_DESKTOP`
 
+![conky widget showing system stats and AI LIMITS bars](screenshot.png)
+
 ## Layout of the AI LIMITS section
 
 ```

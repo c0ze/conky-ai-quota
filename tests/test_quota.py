@@ -28,6 +28,8 @@ def load_script(name):
 claude = load_script("claude-quota")
 codex = load_script("codex-quota")
 grok = load_script("grok-quota")
+mimo = load_script("mimo-quota")
+muse = load_script("muse-quota")
 
 
 def snapshot(percent=40, reset_in=3 * 86400, age=0, **extra):
@@ -59,12 +61,13 @@ class RenderTest(unittest.TestCase):
             {**snapshot(), "reset_at": None},             # ?
             {"error": "HTTP 401", "schema": 2},           # auth!
             {"error": "URLError", "schema": 2},           # error
+            {"error": "FileNotFoundError", "schema": 2},  # auth! (not logged in)
             {},                                           # --
         ]
         labels = [common.render(s, "days") for s in states]
         self.assertTrue(all(len(label) == common.DAYS_WIDTH for label in labels), labels)
         self.assertEqual([label.strip() for label in labels],
-                         ["02d23h", "04h", "09m", "02d23h*", "stale", "?", "auth!", "error", "--"])
+                         ["02d23h", "04h", "09m", "02d23h*", "stale", "?", "auth!", "error", "auth!", "--"])
 
     def test_percent_drops_to_zero_once_the_window_has_reset(self):
         self.assertEqual(common.render(snapshot(percent=100, reset_in=-60), "percent"), "0")
@@ -73,7 +76,8 @@ class RenderTest(unittest.TestCase):
     def test_rows_stay_live_between_fetch_cycles(self):
         # The threaded fetch runs every 60 s but only hits the network after TTL.
         self.assertFalse(common.stale(snapshot(age=common.TTL + 60)))
-        self.assertTrue(common.stale(snapshot(age=common.STALE_AFTER)))
+        self.assertTrue(common.stale(snapshot(age=2 * common.TTL)))
+        self.assertFalse(common.stale(snapshot(age=2 * common.TTL), ttl=1800))
 
     def test_color(self):
         self.assertEqual(common.render(snapshot(), "color"), common.NORMAL_COLOR)
@@ -174,6 +178,33 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(data["percent"], 0)
         with self.assertRaises(ValueError):
             grok.parse_usage({"config": {}})
+
+    def test_muse_reads_the_subscription_event_from_the_stream(self):
+        stream = [b"event: response.created\n", b'data: {"type":"response.created"}\n', b"\n",
+                  b'data: {"type":"response.subscription_usage","subscription":{"tier":"1",'
+                  b'"weekly":{"resets_at":1790553600,"used_percent":49},'
+                  b'"window":{"resets_at":1790252260,"used_percent":8,"window_duration_mins":300}}}\n']
+        data = muse.parse_usage(muse.usage_event(stream))
+        self.assertEqual(data, {"percent": 49, "reset_at": 1790553600, "short_percent": 8,
+                                "short_reset_at": 1790252260})
+        with self.assertRaises(ValueError):
+            muse.usage_event([b'data: {"type":"response.completed"}\n'])
+
+    def test_mimo_prefers_the_monthly_window(self):
+        usage = {"monthUsage": {"items": [{"name": "month_total_token", "used": 250, "limit": 1000}]},
+                 "usage": {"items": [{"name": "plan_total_token", "used": 900, "limit": 1000}]}}
+        data = mimo.parse_usage(usage, {"currentPeriodEnd": "2026-10-03 23:59:59"})
+        self.assertEqual(data["percent"], 25)
+        self.assertEqual(data["reset_at"], 1791043199)  # 2026-10-03 15:59:59 UTC
+        fallback = mimo.parse_usage({"usage": usage["usage"]}, {})
+        self.assertEqual((fallback["percent"], fallback["reset_at"]), (90, None))
+        with self.assertRaises(ValueError):
+            mimo.parse_usage({"monthUsage": {"items": [{"used": 0, "limit": 0}]}}, {})
+
+    def test_mimo_sends_account_cookies_only_to_xiaomi(self):
+        self.assertTrue(mimo.is_xiaomi("https://account.xiaomi.com/pass/serviceLogin?sid=api-platform"))
+        self.assertFalse(mimo.is_xiaomi("https://platform.xiaomimimo.com/sts?nonce=1"))
+        self.assertFalse(mimo.is_xiaomi("https://xiaomi.com.evil.example/"))
 
 
 if __name__ == "__main__":

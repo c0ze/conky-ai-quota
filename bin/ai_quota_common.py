@@ -14,14 +14,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-TTL = 240
-# Rows turn stale only after a missed fetch cycle, not while one is due.
-STALE_AFTER = 2 * TTL
+TTL = 240  # default seconds between fetches; a script may pass its own
 MODES = ("percent", "remaining", "days", "color", "status", "fetch")
 # Conky renders these from the cache only; a threaded `fetch` call does the
 # network work, so a slow provider can never freeze the widget.
 CACHED_MODES = ("percent", "days", "color")
 DAYS_WIDTH = 7  # "06d03h*"; padded so a monospace column keeps bars aligned
+# No data because the login is missing or was rejected.
+AUTH_ERRORS = ("HTTP 400", "HTTP 401", "HTTP 403", "PermissionError", "FileNotFoundError")
 NORMAL_COLOR = "${color}"
 ALERT_COLOR = "${color #f38ba8}"
 STALE_COLOR = "${color #9399b2}"
@@ -155,7 +155,7 @@ def read_cache(path):
         return {}
 
 
-def load_cache(path, fetch):
+def load_cache(path, fetch, ttl=TTL):
     # One fetch/refresh per cache at a time prevents refresh-token races and
     # duplicate failed requests.
     with locked(path.with_name(path.name + ".lock")):
@@ -165,10 +165,10 @@ def load_cache(path, fetch):
         try:
             age = now - number(last_attempt)
         except (ValueError, TypeError):
-            age = TTL
+            age = ttl
         crossed_reset = (cached.get("reset_at") is not None
                          and cached.get("fetched_at", 0) < cached["reset_at"] <= now)
-        if cached.get("schema") == 2 and 0 <= age < TTL and (cached.get("error") or not crossed_reset):
+        if cached.get("schema") == 2 and 0 <= age < ttl and (cached.get("error") or not crossed_reset):
             return cached
         try:
             data = fetch()
@@ -193,10 +193,11 @@ def seconds_remaining(data, now=None):
     return max(0.0, data["reset_at"] - (time.time() if now is None else now))
 
 
-def stale(data, now=None):
+def stale(data, now=None, ttl=TTL):
+    # Stale only after a missed fetch cycle, not while one is merely due.
     now = time.time() if now is None else now
     age = now - data.get("fetched_at", 0)
-    return ("percent" not in data or bool(data.get("error")) or age < 0 or age >= STALE_AFTER
+    return ("percent" not in data or bool(data.get("error")) or age < 0 or age >= 2 * ttl
             or (data.get("reset_at") is not None and data["reset_at"] <= now))
 
 
@@ -217,7 +218,7 @@ def days_label(data, secs, old):
     if "percent" not in data:
         if not data:
             return "--"  # nothing fetched yet
-        return "auth!" if data.get("error") in ("HTTP 400", "HTTP 401", "HTTP 403") else "error"
+        return "auth!" if data.get("error") in AUTH_ERRORS else "error"
     if secs == 0:
         return "stale"  # the reset has passed and no live number replaced it
     if secs is None:
@@ -228,19 +229,19 @@ def days_label(data, secs, old):
     return label + ("*" if old else "")
 
 
-def run(mode, path, fetch):
+def run(mode, path, fetch, ttl=TTL):
     if mode not in MODES:
         sys.exit(f"unknown mode: {mode}")
     if mode == "fetch":
-        load_cache(path, fetch)
+        load_cache(path, fetch, ttl)
         return
-    data = read_cache(path) if mode in CACHED_MODES else load_cache(path, fetch)
-    print(render(data, mode))
+    data = read_cache(path) if mode in CACHED_MODES else load_cache(path, fetch, ttl)
+    print(render(data, mode, ttl))
 
 
-def render(data, mode):
+def render(data, mode, ttl=TTL):
     now = time.time()
-    old = stale(data, now)
+    old = stale(data, now, ttl)
     secs = seconds_remaining(data, now)
     if mode == "percent":
         # Past the reset the cached number describes a window that is over.

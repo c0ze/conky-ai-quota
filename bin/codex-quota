@@ -12,8 +12,8 @@ import re
 import sys
 import time
 from ai_quota_common import (
-    MODES, authenticated_json, jwt_expiry, load_cache, number, percent, read_json,
-    refresh_credentials, render, request_json, timestamp,
+    MODES, authenticated_json, jwt_expiry, number, percent, read_json,
+    refresh_credentials, request_json, run, timestamp,
 )
 
 WEEK = 604800
@@ -54,8 +54,9 @@ def fresh_token(profile, force=False):
 
 def split_windows(rl):
     found = [w for w in (rl.get("primary_window"), rl.get("secondary_window")) if isinstance(w, dict)]
-    weekly = next((w for w in found if number(w.get("limit_window_seconds", 0)) == WEEK), None)
-    others = [w for w in found if 0 < number(w.get("limit_window_seconds", 0)) < WEEK]
+    # Tolerate a few hours of rounding in the reported window length.
+    weekly = next((w for w in found if abs(number(w.get("limit_window_seconds", 0)) - WEEK) < 10800), None)
+    others = [w for w in found if w is not weekly and 0 < number(w.get("limit_window_seconds", 0)) < WEEK]
     short = min(others, key=lambda w: number(w["limit_window_seconds"])) if others else None
     return weekly, short
 
@@ -93,10 +94,7 @@ def fetch(profile):
 def main():
     args = sys.argv[1:]
     profile = args.pop(0) if args and args[0] not in MODES else "default"
-    mode = args[0] if args else "percent"
-    if mode not in MODES:
-        sys.exit(f"unknown mode: {mode}")
-    print(render(load_cache(cache_path(profile), lambda: fetch(profile)), mode))
+    run(args[0] if args else "percent", cache_path(profile), lambda: fetch(profile))
 
 
 if __name__ == "__main__":

@@ -2,7 +2,8 @@
 Type=Application
 Name=Conky
 Comment=System monitor
-Exec=/home/USER/.config/conky/start-conky.sh  # adjust: desktop entries do not expand $HOME
+# Adjust the path: desktop entries do not expand $HOME, and # is not a comment inside Exec=.
+Exec=/home/USER/.config/conky/start-conky.sh
 StartupNotify=false
 Terminal=false
 Hidden=false

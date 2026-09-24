@@ -7,7 +7,7 @@ import fcntl
 import json
 import math
 import os
-from pathlib import Path
+import sys
 import tempfile
 import time
 import urllib.error
@@ -15,7 +15,13 @@ import urllib.parse
 import urllib.request
 
 TTL = 240
-MODES = ("percent", "remaining", "days", "color", "status")
+# Rows turn stale only after a missed fetch cycle, not while one is due.
+STALE_AFTER = 2 * TTL
+MODES = ("percent", "remaining", "days", "color", "status", "fetch")
+# Conky renders these from the cache only; a threaded `fetch` call does the
+# network work, so a slow provider can never freeze the widget.
+CACHED_MODES = ("percent", "days", "color")
+DAYS_WIDTH = 7  # "06d03h*"; padded so a monospace column keeps bars aligned
 NORMAL_COLOR = "${color}"
 ALERT_COLOR = "${color #f38ba8}"
 STALE_COLOR = "${color #9399b2}"
@@ -135,22 +141,26 @@ def authenticated_json(url, token, headers=None):
             error.close()
 
 
+def read_cache(path):
+    """The cached snapshot, or {} when missing or unreadable. Never blocks:
+    writers replace the file atomically."""
+    try:
+        cached = read_json(path)
+        if "percent" in cached:
+            cached["percent"] = percent(cached["percent"])
+            cached["fetched_at"] = number(cached["fetched_at"])
+            cached["reset_at"] = timestamp(cached["reset_at"])
+        return cached
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+
+
 def load_cache(path, fetch):
-    # Conky runs percent/color/time as separate processes. One fetch/refresh
-    # per cache prevents refresh-token races and duplicate failed requests.
+    # One fetch/refresh per cache at a time prevents refresh-token races and
+    # duplicate failed requests.
     with locked(path.with_name(path.name + ".lock")):
         now = time.time()
-        try:
-            cached = read_json(path)
-            if "percent" in cached:
-                cached["percent"] = percent(cached["percent"])
-                cached["fetched_at"] = number(cached["fetched_at"])
-                if "reset_at" not in cached:
-                    secs = number(cached["reset_secs"])
-                    cached["reset_at"] = cached["fetched_at"] + secs if secs > 0 else None
-                cached["reset_at"] = timestamp(cached["reset_at"])
-        except (OSError, ValueError, KeyError, TypeError):
-            cached = {}
+        cached = read_cache(path)
         last_attempt = cached.get("attempted_at", cached.get("fetched_at", 0))
         try:
             age = now - number(last_attempt)
@@ -186,7 +196,7 @@ def seconds_remaining(data, now=None):
 def stale(data, now=None):
     now = time.time() if now is None else now
     age = now - data.get("fetched_at", 0)
-    return ("percent" not in data or bool(data.get("error")) or age < 0 or age >= TTL
+    return ("percent" not in data or bool(data.get("error")) or age < 0 or age >= STALE_AFTER
             or (data.get("reset_at") is not None and data["reset_at"] <= now))
 
 
@@ -203,12 +213,38 @@ def fmt_remaining(secs):
     return f"{minutes}m to reset" if minutes else "<1m to reset"
 
 
+def days_label(data, secs, old):
+    if "percent" not in data:
+        if not data:
+            return "--"  # nothing fetched yet
+        return "auth!" if data.get("error") in ("HTTP 400", "HTTP 401", "HTTP 403") else "error"
+    if secs == 0:
+        return "stale"  # the reset has passed and no live number replaced it
+    if secs is None:
+        return "?*" if old else "?"
+    days, rem = divmod(int(secs), 86400)
+    hours = rem // 3600
+    label = f"{days:02d}d{hours:02d}h" if days else (f"{hours:02d}h" if hours else f"{int(rem // 60):02d}m")
+    return label + ("*" if old else "")
+
+
+def run(mode, path, fetch):
+    if mode not in MODES:
+        sys.exit(f"unknown mode: {mode}")
+    if mode == "fetch":
+        load_cache(path, fetch)
+        return
+    data = read_cache(path) if mode in CACHED_MODES else load_cache(path, fetch)
+    print(render(data, mode))
+
+
 def render(data, mode):
     now = time.time()
     old = stale(data, now)
     secs = seconds_remaining(data, now)
     if mode == "percent":
-        return f"{percent(data.get('percent', 0)):.0f}"
+        # Past the reset the cached number describes a window that is over.
+        return "0" if secs == 0 else f"{percent(data.get('percent', 0)):.0f}"
     if mode == "color":
         if old:
             return STALE_COLOR
@@ -216,16 +252,7 @@ def render(data, mode):
         hot = data.get("short_percent", 0) >= 95 and (short_reset is None or short_reset > now)
         return ALERT_COLOR if hot or data.get("percent", 0) >= 95 else NORMAL_COLOR
     if mode == "days":
-        if "percent" not in data:
-            return "auth!" if data.get("error") in ("HTTP 400", "HTTP 401", "HTTP 403") else "error"
-        if secs == 0:
-            return "stale" if old else "reset"
-        if secs is None:
-            return "?*" if old else "?"
-        days, rem = divmod(int(secs), 86400)
-        hours = rem // 3600
-        label = f"{days:02d}d{hours:02d}h" if days else (f"{hours:02d}h" if hours else f"{int(rem // 60):02d}m")
-        return label + ("*" if old else "")
+        return days_label(data, secs, old).rjust(DAYS_WIDTH)
     if mode == "remaining":
         if old and secs == 0:
             return "stale: cached reset has passed; awaiting live usage"

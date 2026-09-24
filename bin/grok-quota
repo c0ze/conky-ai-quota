@@ -7,8 +7,8 @@ from pathlib import Path
 import sys
 import time
 from ai_quota_common import (
-    MODES, authenticated_json, jwt_expiry, load_cache, number, percent, read_json,
-    refresh_credentials, render, request_json, timestamp,
+    authenticated_json, jwt_expiry, number, percent, read_json,
+    refresh_credentials, request_json, run, timestamp,
 )
 
 
@@ -72,10 +72,7 @@ def fetch():
 
 
 def main():
-    mode = sys.argv[1] if len(sys.argv) > 1 else "percent"
-    if mode not in MODES:
-        sys.exit(f"unknown mode: {mode}")
-    print(render(load_cache(cache_path(), fetch), mode))
+    run(sys.argv[1] if len(sys.argv) > 1 else "percent", cache_path(), fetch)
 
 
 if __name__ == "__main__":

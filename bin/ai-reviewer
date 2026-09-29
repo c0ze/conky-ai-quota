@@ -97,7 +97,12 @@ def quota_verdict(name):
         return False, "quota exhausted"
     if "percent" not in reading:
         return True, f"usage unknown ({reading.get('error', 'no reading')})"
-    return True, f"{100 - reading['percent']:.0f}% of the week left"
+    left = f"{100 - reading['percent']:.0f}% left"
+    reset = reading.get("reset_at")
+    if reset and reset > time.time():
+        days, hours = divmod(int((reset - time.time()) // 3600), 24)
+        left += f", resets in {days}d{hours:02d}h"
+    return True, left
 
 
 def check(name):

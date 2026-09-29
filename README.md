@@ -96,7 +96,9 @@ choose the list yourself. It shares `codex-quota`'s caches (60 s freshness).
 Codex plugin, agents that shell out to `codex exec`) off exhausted accounts. Put
 its directory first on `PATH`; when `CLAUDECODE=1` and no `CODEX_HOME` is set it
 exports the picked home, otherwise it hands straight off to the next `codex` on
-`PATH`. Opt out with `CODEX_AUTO_ACCOUNT=0`; choices are logged to
+`PATH`. Opt out with `CODEX_AUTO_ACCOUNT=0`. A launcher that clears
+`CLAUDECODE` or pins its own `PATH` (an agent bridge spawning `codex exec`) can
+call the wrapper by absolute path with `CODEX_AUTO_ACCOUNT=1`. Choices are logged to
 `~/.cache/codex-pick.log`. Long-lived processes (the Codex plugin's broker)
 keep the account they started with until they restart.
 

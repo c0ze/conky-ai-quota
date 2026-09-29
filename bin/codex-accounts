@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Several Codex accounts at a glance, and which one to use next.
+
+codex-accounts [all]  one line per account: weekly and 5h quota left, blocked
+codex-accounts pick   print the CODEX_HOME to use: the unblocked account whose
+                      weekly window resets soonest (spend quota before it expires)
+
+Accounts are the ~/.codex-<name> homes codex-quota already reads; a home counts
+once it has auth.json or config.toml. When a compat symlink and a real directory
+point at the same home, the real directory's name wins. Set CODEX_ACCOUNTS="a b"
+to list them explicitly. Shares codex-quota's caches, so conky and this agree.
+"""
+import importlib.machinery
+import importlib.util
+import os
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+import re
+import sys
+import time
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from ai_quota_common import days_label, load_cache, seconds_remaining, stale  # noqa: E402
+
+PICK_TTL = 60  # an account that just ran dry should drop out within a minute
+
+
+def load_codex_quota():
+    loader = importlib.machinery.SourceFileLoader("codex_quota", str(HERE / "codex-quota"))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+codex = load_codex_quota()
+
+
+def discover(home, env):
+    if env.get("CODEX_ACCOUNTS"):
+        return env["CODEX_ACCOUNTS"].split()
+    chosen = {}  # resolved home -> (is_symlink, name)
+    for path in home.glob(".codex-*"):
+        name = path.name[len(".codex-"):]
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", name) or not path.is_dir():
+            continue
+        if not ((path / "auth.json").exists() or (path / "config.toml").exists()):
+            continue
+        key = path.resolve()
+        rank = (path.is_symlink(), name)
+        if key not in chosen or rank < chosen[key]:
+            chosen[key] = rank
+    return sorted(name for _, name in chosen.values())
+
+
+def snapshot(profile, ttl):
+    try:
+        return load_cache(codex.cache_path(profile), lambda: codex.fetch(profile), ttl)
+    except (OSError, ValueError) as error:
+        return {"error": type(error).__name__}
+
+
+def snapshots(names, ttl):
+    with ThreadPoolExecutor(max(1, len(names))) as pool:
+        return dict(zip(names, pool.map(lambda p: snapshot(p, ttl), names)))
+
+
+def blocked_until(data, now):
+    """None when usable now, else when it frees up (inf: no login or no reset time)."""
+    if "percent" not in data:
+        return float("inf")
+    times = []
+    if data["percent"] >= 100:
+        times.append(data.get("reset_at") or float("inf"))
+    if data.get("short_percent", 0) >= 100:
+        times.append(data.get("short_reset_at") or float("inf"))
+    times = [t for t in times if t > now]  # a window that already reset is free
+    return max(times) if times else None
+
+
+def pick(snaps, now):
+    free = [(d.get("reset_at") or float("inf"), d["percent"], p)
+            for p, d in snaps.items() if blocked_until(d, now) is None]
+    if free:
+        return min(free)[2]
+    # Everything is blocked: take the account that frees up first.
+    soonest = min(snaps, key=lambda p: blocked_until(snaps[p], now))
+    print(f"codex-accounts: all accounts blocked; using {soonest}", file=sys.stderr)
+    return soonest
+
+
+def show_all(snaps, now):
+    chosen = pick(snaps, now)
+    width = max(map(len, snaps))
+    for p, d in snaps.items():
+        if "percent" not in d:
+            print(f"{p:{width}}  {days_label(d, None, True)}")
+            continue
+        state = "BLOCKED" if blocked_until(d, now) is not None else ("<- pick" if p == chosen else "")
+        resets = days_label(d, seconds_remaining(d, now), stale(d, now)).strip()
+        print(f"{p:{width}}  weekly {100 - d['percent']:5.1f}% left  resets in {resets:7}"
+              f"  5h {100 - d.get('short_percent', 0):5.1f}% left  {state}")
+
+
+def main():
+    args = sys.argv[1:] or ["all"]
+    if args not in (["all"], ["pick"]):
+        sys.exit("usage: codex-accounts [all|pick]")
+    names = discover(Path.home(), os.environ)
+    if not names:
+        sys.exit("codex-accounts: no ~/.codex-<name> homes found (or set CODEX_ACCOUNTS)")
+    snaps = snapshots(names, PICK_TTL)
+    now = time.time()  # after fetching: a fresh fetched_at must not look future-dated
+    if args[0] == "all":
+        show_all(snaps, now)
+    else:
+        print(codex.codex_home(pick(snaps, now)))
+
+
+if __name__ == "__main__":
+    main()

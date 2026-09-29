@@ -74,6 +74,32 @@ window is at 95% or more. The weekly number can look comfortable while that
 burst limit is what is actually blocking a session, so it is worth seeing.
 Caches are per profile: `~/.cache/codex-quota-<profile>.json`.
 
+### All accounts at once, and picking one automatically
+
+`codex-accounts` lists every `~/.codex-<name>` home (one with `auth.json` or
+`config.toml`) with its weekly and 5h quota left, and marks blocked accounts:
+
+```
+$ codex-accounts
+work      weekly  80.0% left  resets in 03d22h   5h 100.0% left  <- pick
+personal  weekly   0.0% left  resets in 04d06h   5h 100.0% left  BLOCKED
+```
+
+`codex-accounts pick` prints the `CODEX_HOME` to use next: among the accounts
+with quota left, the one whose weekly window resets soonest, so quota that is
+about to expire gets spent first. If every account is blocked it takes the one
+that frees up first. A compat symlink (`~/.codex-old -> ~/.codex-new`) is
+listed once, under the real directory's name; set `CODEX_ACCOUNTS="a b"` to
+choose the list yourself. It shares `codex-quota`'s caches (60 s freshness).
+
+`codex-wrapper/codex` uses that to keep Claude Code's Codex integrations (the
+Codex plugin, agents that shell out to `codex exec`) off exhausted accounts. Put
+its directory first on `PATH`; when `CLAUDECODE=1` and no `CODEX_HOME` is set it
+exports the picked home, otherwise it hands straight off to the next `codex` on
+`PATH`. Opt out with `CODEX_AUTO_ACCOUNT=0`; choices are logged to
+`~/.cache/codex-pick.log`. Long-lived processes (the Codex plugin's broker)
+keep the account they started with until they restart.
+
 ## Install
 
 ```bash
@@ -81,6 +107,10 @@ cp bin/*-quota bin/ai_quota_common.py ~/.local/bin/   # the pollers + their shar
 cp conky/conky.conf ~/.config/conky/  # and/or conky-hyprland.conf
 cp conky/start-conky.sh ~/.config/conky/
 cp conky/conky.desktop.example ~/.config/autostart/conky.desktop  # then fix the Exec path inside
+# optional: several Codex accounts
+cp bin/codex-accounts bin/codex-pick ~/.local/bin/
+mkdir -p ~/.local/share/codex-accounts/bin && cp codex-wrapper/codex ~/.local/share/codex-accounts/bin/
+echo 'export PATH="$HOME/.local/share/codex-accounts/bin:$PATH"' >> ~/.zshrc  # last, after mise/asdf
 ```
 
 Requirements:

@@ -1,0 +1,25 @@
+#!/bin/bash
+# Claude-side Codex account picker. When Claude Code runs `codex` (CLAUDECODE=1)
+# without an explicit CODEX_HOME, point it at the account `codex-accounts pick`
+# chooses. Everything else passes through untouched. Put this directory first on
+# PATH; opt out per session with CODEX_AUTO_ACCOUNT=0. Log: ~/.cache/codex-pick.log
+if [ -z "${CODEX_HOME:-}" ] && [ "${CLAUDECODE:-}" = 1 ] && [ "${CODEX_AUTO_ACCOUNT:-1}" != 0 ]; then
+  log="$HOME/.cache/codex-pick.log"
+  mkdir -p "${log%/*}"
+  picker=$(command -v codex-accounts || echo "$HOME/.local/bin/codex-accounts")
+  if home=$("$picker" pick 2>>"$log") && [ -d "$home" ]; then
+    export CODEX_HOME="$home"
+  fi
+  printf '%s pid=%s home=%s args=%s\n' "$(date '+%F %T')" "$$" "${CODEX_HOME:-<default>}" "${*:1:2}" >>"$log"
+fi
+
+# Hand off to the next `codex` on PATH that isn't this wrapper.
+IFS=: read -ra dirs <<<"$PATH"
+for dir in "${dirs[@]}"; do
+  candidate="$dir/codex"
+  if [ -x "$candidate" ] && [ ! "$candidate" -ef "${BASH_SOURCE[0]}" ]; then
+    exec "$candidate" "$@"
+  fi
+done
+echo "codex wrapper: no real codex found on PATH" >&2
+exit 127

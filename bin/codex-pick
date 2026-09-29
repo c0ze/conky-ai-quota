@@ -1,0 +1,3 @@
+#!/bin/sh
+# Print the CODEX_HOME the Claude-side codex wrapper would use right now.
+exec codex-accounts pick "$@"

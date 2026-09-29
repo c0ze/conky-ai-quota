@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""Which agent should do the next code review? Prints codex, muse or mimo.
+
+ai-reviewer         the first available agent in order (exit 1 if none)
+ai-reviewer --why   every agent with the reason it is or isn't available
+
+Order: codex, muse, mimo (override with AI_REVIEWERS="muse codex"). An agent
+is skipped when its CLI is missing or a reading shows its weekly or 5h window
+at 100% with a reset still ahead. Codex counts as available while any account
+in codex-accounts has quota. An unknown reading (never fetched, no login for
+the quota script) counts as available: the review itself will say otherwise.
+Readings come from the sibling quota scripts and their caches. When a local
+script has no numbers (e.g. the CLI keeps its login in the macOS Keychain),
+AI_QUOTA_REMOTE=<ssh host> asks the same script there; quotas are per
+account, so a machine logged in to the same account gives the right answer.
+"""
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import time
+
+HERE = Path(__file__).resolve().parent
+DEFAULT_ORDER = ("codex", "muse", "mimo")
+# CLIs that install outside PATH for non-interactive shells.
+EXTRA_BIN = {"mimo": Path.home() / ".mimocode/bin/mimo"}
+
+
+def exhausted(reading, now):
+    def full(pct, reset):
+        return pct is not None and pct >= 100 and (reset is None or reset > now)
+    return (full(reading.get("percent"), reading.get("reset_at"))
+            or full(reading.get("short_percent"), reading.get("short_reset_at")))
+
+
+def choose(order, check):
+    for name in order:
+        ok, _ = check(name)
+        if ok:
+            return name
+    return None
+
+
+def installed(name):
+    return bool(shutil.which(name)) or (name in EXTRA_BIN and EXTRA_BIN[name].exists())
+
+
+def load_script(name):
+    loader = importlib.machinery.SourceFileLoader(name.replace("-", "_"), str(HERE / name))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def codex_verdict():
+    accounts = load_script("codex-accounts")
+    names = accounts.discover(Path.home(), os.environ)
+    if not names:
+        return True, "no ~/.codex-<name> accounts; usage unknown"
+    snaps = accounts.snapshots(names, accounts.PICK_TTL)
+    now = time.time()
+    free = [n for n, d in snaps.items() if accounts.blocked_until(d, now) is None]
+    if free:
+        return True, f"{accounts.pick(snaps, now)} has quota"
+    return False, f"all {len(names)} accounts blocked"
+
+
+def best_reading(local, remote):
+    """The local reading unless it has no numbers and the remote one does."""
+    if "percent" in local:
+        return local
+    other = remote()
+    return other if other and "percent" in other else local
+
+
+def status_json(argv):
+    try:
+        reading = json.loads(subprocess.run(argv, capture_output=True, text=True, timeout=60).stdout)
+    except (subprocess.SubprocessError, ValueError, OSError):
+        return None
+    return reading if isinstance(reading, dict) else None
+
+
+def quota_verdict(name):
+    script = HERE / f"{name}-quota"
+    local = (status_json([sys.executable, str(script), "status"]) if script.exists() else None) or {}
+    host = os.environ.get("AI_QUOTA_REMOTE")
+    remote = (lambda: status_json(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+                                   host, f"{name}-quota", "status"])) if host else (lambda: None)
+    reading = best_reading(local, remote)
+    if exhausted(reading, time.time()):
+        return False, "quota exhausted"
+    if "percent" not in reading:
+        return True, f"usage unknown ({reading.get('error', 'no reading')})"
+    return True, f"{100 - reading['percent']:.0f}% of the week left"
+
+
+def check(name):
+    if not installed(name):
+        return False, "not installed"
+    return codex_verdict() if name == "codex" else quota_verdict(name)
+
+
+def main():
+    order = os.environ.get("AI_REVIEWERS", "").split() or list(DEFAULT_ORDER)
+    if sys.argv[1:] == ["--why"]:
+        for name in order:
+            ok, why = check(name)
+            print(f"{name:6} {'yes' if ok else 'no ':3}  {why}")
+        return
+    if sys.argv[1:]:
+        sys.exit("usage: ai-reviewer [--why]")
+    name = choose(order, check)
+    if name is None:
+        sys.exit("ai-reviewer: no reviewer available")
+    print(name)
+
+
+if __name__ == "__main__":
+    main()

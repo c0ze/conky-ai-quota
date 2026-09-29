@@ -102,6 +102,17 @@ call the wrapper by absolute path with `CODEX_AUTO_ACCOUNT=1`. Choices are logge
 `~/.cache/codex-pick.log`. Long-lived processes (the Codex plugin's broker)
 keep the account they started with until they restart.
 
+### Picking a reviewer: Codex, then Muse, then MiMo
+
+`ai-reviewer` prints the first agent with quota left, in the order `codex`
+(any account in `codex-accounts`), `muse`, `mimo`; `ai-reviewer --why` shows
+each verdict and `AI_REVIEWERS="muse codex"` changes the order. An agent is
+skipped when its CLI is missing or a reading shows its weekly or 5h window at
+100%; an unknown reading counts as available. When a local quota script has no
+numbers (Muse on macOS keeps its OAuth login in the Keychain), set
+`AI_QUOTA_REMOTE=<ssh host>` to ask the same script on a machine logged in to
+the same account.
+
 ## Install
 
 ```bash
@@ -110,7 +121,7 @@ cp conky/conky.conf ~/.config/conky/  # and/or conky-hyprland.conf
 cp conky/start-conky.sh ~/.config/conky/
 cp conky/conky.desktop.example ~/.config/autostart/conky.desktop  # then fix the Exec path inside
 # optional: several Codex accounts
-cp bin/codex-accounts bin/codex-pick ~/.local/bin/
+cp bin/codex-accounts bin/codex-pick bin/ai-reviewer ~/.local/bin/
 mkdir -p ~/.local/share/codex-accounts/bin && cp codex-wrapper/codex ~/.local/share/codex-accounts/bin/
 echo 'export PATH="$HOME/.local/share/codex-accounts/bin:$PATH"' >> ~/.zshrc  # last, after mise/asdf
 ```

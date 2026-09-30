@@ -4,6 +4,10 @@
 codex-accounts [all]  one line per account: weekly and 5h quota left, blocked
 codex-accounts pick   print the CODEX_HOME to use: the unblocked account whose
                       weekly window resets soonest (spend quota before it expires)
+codex-accounts prefer [<name>|--clear]
+                      pin one account: pick uses it whenever it is unblocked and
+                      falls back to the rule above while it is blocked. No
+                      argument shows the pin; --clear removes it.
 
 Accounts are the ~/.codex-<name> homes codex-quota already reads; a home counts
 once it has auth.json or config.toml. When a compat symlink and a real directory
@@ -24,6 +28,7 @@ sys.path.insert(0, str(HERE))
 from ai_quota_common import days_label, load_cache, seconds_remaining, stale  # noqa: E402
 
 PICK_TTL = 60  # an account that just ran dry should drop out within a minute
+PREFER_FILE = Path.home() / ".config" / "codex-accounts" / "prefer"
 
 
 def load_codex_quota():
@@ -79,7 +84,24 @@ def blocked_until(data, now):
     return max(times) if times else None
 
 
-def pick(snaps, now):
+def read_prefer(path):
+    try:
+        return path.read_text().strip() or None
+    except FileNotFoundError:
+        return None
+
+
+def write_prefer(path, name):
+    if name is None:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(name + "\n")
+
+
+def pick(snaps, now, prefer=None):
+    if prefer in snaps and blocked_until(snaps[prefer], now) is None:
+        return prefer
     free = [(d.get("reset_at") or float("inf"), d["percent"], p)
             for p, d in snaps.items() if blocked_until(d, now) is None]
     if free:
@@ -90,8 +112,10 @@ def pick(snaps, now):
     return soonest
 
 
-def show_all(snaps, now):
-    chosen = pick(snaps, now)
+def show_all(snaps, now, prefer=None):
+    chosen = pick(snaps, now, prefer)
+    if prefer:
+        print(f"preferred: {prefer} (codex-accounts prefer --clear to go back to soonest-reset)")
     width = max(map(len, snaps))
     for p, d in snaps.items():
         if "percent" not in d:
@@ -105,17 +129,28 @@ def show_all(snaps, now):
 
 def main():
     args = sys.argv[1:] or ["all"]
-    if args not in (["all"], ["pick"]):
-        sys.exit("usage: codex-accounts [all|pick]")
     names = discover(Path.home(), os.environ)
+    if args[0] == "prefer" and len(args) <= 2:
+        if len(args) == 1:
+            print(read_prefer(PREFER_FILE) or "none")
+        elif args[1] == "--clear":
+            write_prefer(PREFER_FILE, None)
+        elif args[1] in names:
+            write_prefer(PREFER_FILE, args[1])
+        else:
+            sys.exit(f"codex-accounts: no account {args[1]!r} (have: {' '.join(names)})")
+        return
+    if args not in (["all"], ["pick"]):
+        sys.exit("usage: codex-accounts [all|pick|prefer [<name>|--clear]]")
     if not names:
         sys.exit("codex-accounts: no ~/.codex-<name> homes found (or set CODEX_ACCOUNTS)")
+    prefer = read_prefer(PREFER_FILE)
     snaps = snapshots(names, PICK_TTL)
     now = time.time()  # after fetching: a fresh fetched_at must not look future-dated
     if args[0] == "all":
-        show_all(snaps, now)
+        show_all(snaps, now, prefer)
     else:
-        print(codex.codex_home(pick(snaps, now)))
+        print(codex.codex_home(pick(snaps, now, prefer)))
 
 
 if __name__ == "__main__":

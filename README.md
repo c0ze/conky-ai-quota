@@ -92,6 +92,11 @@ that frees up first. A compat symlink (`~/.codex-old -> ~/.codex-new`) is
 listed once, under the real directory's name; set `CODEX_ACCOUNTS="a b"` to
 choose the list yourself. It shares `codex-quota`'s caches (60 s freshness).
 
+`codex-accounts prefer <name>` pins one account for a while (say, one with a
+banked reset to use up): `pick` returns it whenever it is unblocked and falls
+back to the soonest-reset rule while it is blocked. `codex-accounts prefer
+--clear` goes back; the pin lives in `~/.config/codex-accounts/prefer`.
+
 `codex-wrapper/codex` uses that to keep Claude Code's Codex integrations (the
 Codex plugin, agents that shell out to `codex exec`) off exhausted accounts. Put
 its directory first on `PATH`; when `CLAUDECODE=1` and no `CODEX_HOME` is set it

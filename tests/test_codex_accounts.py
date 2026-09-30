@@ -58,6 +58,37 @@ class PickTest(unittest.TestCase):
         self.assertEqual(pick(snaps), "b")
 
 
+class PreferTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.path = Path(self.dir.name) / "prefer"
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def pick(self, snaps, prefer):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return accounts.pick(snaps, NOW, prefer)
+
+    def test_preferred_account_wins_while_usable(self):
+        snaps = {"a": usage(50, NOW + 300), "b": usage(10, NOW + 900)}
+        self.assertEqual(self.pick(snaps, "b"), "b")
+
+    def test_blocked_preferred_account_falls_back(self):
+        snaps = {"a": usage(50, NOW + 300), "b": usage(10, NOW + 900, 100, NOW + 60)}
+        self.assertEqual(self.pick(snaps, "b"), "a")
+
+    def test_unknown_preferred_account_is_ignored(self):
+        self.assertEqual(self.pick({"a": usage()}, "gone"), "a")
+
+    def test_prefer_file_round_trip(self):
+        self.assertIsNone(accounts.read_prefer(self.path))
+        accounts.write_prefer(self.path, "b")
+        self.assertEqual(accounts.read_prefer(self.path), "b")
+        accounts.write_prefer(self.path, None)
+        self.assertIsNone(accounts.read_prefer(self.path))
+
+
 class DiscoverTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()

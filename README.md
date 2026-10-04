@@ -110,7 +110,7 @@ keep the account they started with until they restart.
 ### Picking a reviewer: Codex, then Muse, then MiMo
 
 `ai-reviewer` prints the first agent with quota left, in the order `codex`
-(any account in `codex-accounts`), `muse`, `mimo`; `ai-reviewer --why` shows
+(any account in `codex-accounts`), `muse`, `mimo`, `mcode`; `ai-reviewer --why` shows
 each verdict and `AI_REVIEWERS="muse codex"` changes the order. An agent is
 skipped when its CLI is missing or a reading shows its weekly or 5h window at
 100%; an unknown reading counts as available. When a local quota script has no

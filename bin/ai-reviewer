@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Which agent should do the next code review? Prints codex, muse or mimo.
+"""Which agent should do the next code review? Prints codex, muse, mimo or mcode.
 
 ai-reviewer         the first available agent in order (exit 1 if none)
 ai-reviewer --why   every agent with the reason it is or isn't available
 
-Order: codex, muse, mimo (override with AI_REVIEWERS="muse codex"). An agent
+Order: codex, muse, mimo, mcode (override with AI_REVIEWERS="muse codex"). An agent
 is skipped when its CLI is missing or a reading shows its weekly or 5h window
 at 100% with a reset still ahead. Codex counts as available while any account
 in codex-accounts has quota. An unknown reading (never fetched, no login for
@@ -25,9 +25,10 @@ import sys
 import time
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_ORDER = ("codex", "muse", "mimo")
+DEFAULT_ORDER = ("codex", "muse", "mimo", "mcode")
 # CLIs that install outside PATH for non-interactive shells.
-EXTRA_BIN = {"mimo": Path.home() / ".mimocode/bin/mimo"}
+EXTRA_BIN = {"mimo": Path.home() / ".mimocode/bin/mimo",
+             "mcode": Path.home() / ".minimax-code/bin/mcode"}
 
 
 def exhausted(reading, now):

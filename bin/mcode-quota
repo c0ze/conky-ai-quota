@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""MiniMax Code (mcode) Token Plan usage: percent|remaining|days|color|status|fetch.
+
+Reads the 5h and weekly windows from the platform's coding_plan/remains
+endpoint with the access token mcode keeps in
+~/.minimax/auth/prod/<region>/mcode-public/auth.json ($MINIMAX_HOME moves
+~/.minimax). That token lives about an hour and mcode renews it while it
+runs; this script never refreshes it, so mcode's login is never disturbed.
+With an expired token the fetch fails as TokenExpired and the last reading
+stays in the cache (marked stale); usage only moves while mcode runs, and
+then the token is fresh again.
+"""
+import os
+from pathlib import Path
+import sys
+import time
+from ai_quota_common import USER_AGENT, number, percent, read_json, request_json, run
+
+CACHE = Path.home() / ".cache/mcode-quota.json"
+TTL = 300  # one cheap GET, no model call
+REMAINS_PATH = "/v1/api/openplatform/coding_plan/remains"
+PLATFORM = {"en": "https://platform.minimax.io", "cn": "https://www.minimaxi.com"}
+UNLIMITED = 3  # window status the CLI shows as unlimited
+
+
+class TokenExpired(Exception):
+    pass
+
+
+def minimax_home():
+    return Path(os.environ.get("MINIMAX_HOME") or Path.home() / ".minimax")
+
+
+def credentials(home):
+    """(access token, platform base URL) for the signed-in region."""
+    try:
+        region = read_json(home / "preferences/mcode-region.json")["regions"]["prod"]
+    except (OSError, ValueError, KeyError):
+        region = "en"
+    records = read_json(home / f"auth/prod/{region}/mcode-public/auth.json")["records"]
+    record = next(iter(records.values()))
+    if number(record["expiresAtMs"]) / 1000 <= time.time() + 30:
+        raise TokenExpired("mcode's access token expired; it renews when mcode next runs")
+    return record["accessToken"], PLATFORM.get(region, PLATFORM["en"])
+
+
+def window(entry, prefix, end_key):
+    """Used percent and reset time (seconds) of one window."""
+    if entry.get(f"{prefix}_status") == UNLIMITED:
+        used = 0.0
+    elif entry.get(f"{prefix}_remaining_percent") is not None:
+        used = 100 - number(entry[f"{prefix}_remaining_percent"])
+    elif number(entry.get(f"{prefix}_total_count") or 0) > 0:
+        used = number(entry.get(f"{prefix}_usage_count") or 0) / number(entry[f"{prefix}_total_count"]) * 100
+    else:
+        raise ValueError(f"no {prefix} usage in response")
+    end = entry.get(end_key)
+    return percent(used), (number(end) / 1000 if end else None)
+
+
+def parse_usage(body):
+    status = (body.get("base_resp") or {}).get("status_code")
+    if status not in (0, None):
+        raise ValueError(f"remains endpoint answered status {status}")
+    entries = [e for e in body.get("model_remains") or [] if isinstance(e, dict)]
+    if not entries:
+        raise ValueError("no usage windows in response")
+    weekly, weekly_reset = window(entries[0], "current_weekly", "weekly_end_time")
+    short, short_reset = window(entries[0], "current_interval", "end_time")
+    return {"percent": weekly, "reset_at": weekly_reset,
+            "short_percent": short, "short_reset_at": short_reset}
+
+
+def fetch():
+    token, base = credentials(minimax_home())
+    return parse_usage(request_json(base + REMAINS_PATH, headers={
+        "Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}))
+
+
+def main():
+    run(sys.argv[1] if len(sys.argv) > 1 else "percent", CACHE, fetch, TTL)
+
+
+if __name__ == "__main__":
+    main()

@@ -182,6 +182,16 @@ are logged in to platform.xiaomimimo.com (DevTools → Application → Cookies).
 The account cookies are only ever sent to `*.xiaomi.com`. Until the file
 exists, or when Xiaomi rejects the login, the row shows `auth!`.
 
+## MCode: the coding-plan endpoint, with mcode's own token
+
+MiniMax Code (`mcode`) shows its Token Plan's 5h and weekly windows from
+`/v1/api/openplatform/coding_plan/remains`. `mcode-quota` calls it with the
+access token mcode stores in `~/.minimax/auth/prod/<region>/mcode-public/auth.json`
+(one cheap GET, no model call). That token lives about an hour and mcode renews
+it while it runs; `mcode-quota` never refreshes it, so mcode's login is never
+disturbed. With an expired token the row keeps the last reading, marked stale,
+which is fine: usage only moves while mcode runs, and then the token is fresh.
+
 ## Tests
 
 ```bash

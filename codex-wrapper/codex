@@ -4,24 +4,74 @@
 # chooses. Everything else passes through untouched. Put this directory first on
 # PATH; opt out per session with CODEX_AUTO_ACCOUNT=0. Launchers that clear
 # CLAUDECODE (agent bridges) can opt in with CODEX_AUTO_ACCOUNT=1.
+#
+# tincan hosts (CODEX_AUTO_ACCOUNT=1 set explicitly, `codex exec`): when every
+# account is blocked (5h or weekly limit), answer with grok instead of failing
+# on a spent account. The prompt comes from stdin, the reply goes to the -o file
+# (or stdout), -C is the working directory.
 # Log: ~/.cache/codex-pick.log
 auto=${CODEX_AUTO_ACCOUNT:-}
 [ -z "$auto" ] && [ "${CLAUDECODE:-}" = 1 ] && auto=1
+
+log="$HOME/.cache/codex-pick.log"
+note() { printf '%s pid=%s %s\n' "$(date '+%F %T')" "$$" "$*" >>"$log"; }
+
+grok_fallback() {
+  local out="" dir="$PWD" prompt rc i args=("$@")
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[i]}" in
+      -o | --output-last-message) out=${args[i + 1]} ;;
+      -C | --cd) dir=${args[i + 1]} ;;
+    esac
+  done
+  prompt=$(mktemp) || return 1
+  cat >"$prompt"
+  note "all codex accounts blocked; answering with grok in $dir"
+  if [ -n "$out" ]; then
+    grok --prompt-file "$prompt" --always-approve --cwd "$dir" >"$out"
+  else
+    grok --prompt-file "$prompt" --always-approve --cwd "$dir"
+  fi
+  rc=$?
+  rm -f "$prompt"
+  return $rc
+}
+
 if [ -z "${CODEX_HOME:-}" ] && [ "$auto" = 1 ]; then
-  log="$HOME/.cache/codex-pick.log"
   mkdir -p "${log%/*}"
   picker=$(command -v codex-accounts || echo "$HOME/.local/bin/codex-accounts")
-  if home=$("$picker" pick 2>>"$log") && [ -d "$home" ]; then
+  strict=""
+  if [ "${CODEX_AUTO_ACCOUNT:-}" = 1 ] && [ "${1:-}" = exec ] && command -v grok >/dev/null 2>&1; then
+    strict=--strict
+  fi
+  home=$("$picker" pick $strict 2>>"$log")
+  rc=$?
+  if [ "$rc" = 3 ] && [ -n "$strict" ]; then
+    grok_fallback "$@"
+    exit $?
+  fi
+  if [ "$rc" = 0 ] && [ -d "$home" ]; then
     export CODEX_HOME="$home"
   fi
-  printf '%s pid=%s home=%s args=%s\n' "$(date '+%F %T')" "$$" "${CODEX_HOME:-<default>}" "${*:1:2}" >>"$log"
+  note "home=${CODEX_HOME:-<default>} args=${*:1:2}"
 fi
 
-# Hand off to the next `codex` on PATH that isn't this wrapper.
+# Hand off to the real codex. A launcher that resolves `codex` through PATH
+# again (Omarchy's ~/.local/bin/codex runs `mise x codex -- codex`) would land
+# back in this wrapper and loop forever at full CPU, so prefer the binary mise
+# resolves, then scan PATH skipping this wrapper and such launchers.
+self="${BASH_SOURCE[0]}"
+reenters() { [ "$1" -ef "$self" ] || grep -qs 'mise x' "$1"; }
+if command -v mise >/dev/null 2>&1; then
+  real=$(mise which codex 2>/dev/null)
+  if [ -n "$real" ] && [ -x "$real" ] && ! reenters "$real"; then
+    exec "$real" "$@"
+  fi
+fi
 IFS=: read -ra dirs <<<"$PATH"
 for dir in "${dirs[@]}"; do
   candidate="$dir/codex"
-  if [ -x "$candidate" ] && [ ! "$candidate" -ef "${BASH_SOURCE[0]}" ]; then
+  if [ -x "$candidate" ] && ! reenters "$candidate"; then
     exec "$candidate" "$@"
   fi
 done
